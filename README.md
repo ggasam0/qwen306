@@ -1,301 +1,390 @@
----
-library_name: transformers
-license: apache-2.0
-license_link: https://huggingface.co/Qwen/Qwen3-0.6B/blob/main/LICENSE
-pipeline_tag: text-generation
-base_model:
-- Qwen/Qwen3-0.6B-Base
----
+#!/usr/bin/env python3
+from __future__ import annotations
 
-# Qwen3-0.6B
-<a href="https://chat.qwen.ai/" target="_blank" style="margin: 2px;">
-    <img alt="Chat" src="https://img.shields.io/badge/%F0%9F%92%9C%EF%B8%8F%20Qwen%20Chat%20-536af5" style="display: inline-block; vertical-align: middle;"/>
-</a>
+import re
+import sys
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Dict, List, Tuple, Set
 
-## Qwen3 Highlights
-
-Qwen3 is the latest generation of large language models in Qwen series, offering a comprehensive suite of dense and mixture-of-experts (MoE) models. Built upon extensive training, Qwen3 delivers groundbreaking advancements in reasoning, instruction-following, agent capabilities, and multilingual support, with the following key features:
-
-- **Uniquely support of seamless switching between thinking mode** (for complex logical reasoning, math, and coding) and **non-thinking mode** (for efficient, general-purpose dialogue) **within single model**, ensuring optimal performance across various scenarios.
-- **Significantly enhancement in its reasoning capabilities**, surpassing previous QwQ (in thinking mode) and Qwen2.5 instruct models (in non-thinking mode) on mathematics, code generation, and commonsense logical reasoning.
-- **Superior human preference alignment**, excelling in creative writing, role-playing, multi-turn dialogues, and instruction following, to deliver a more natural, engaging, and immersive conversational experience.
-- **Expertise in agent capabilities**, enabling precise integration with external tools in both thinking and unthinking modes and achieving leading performance among open-source models in complex agent-based tasks.
-- **Support of 100+ languages and dialects** with strong capabilities for **multilingual instruction following** and **translation**.
-
-## Model Overview
-
-**Qwen3-0.6B** has the following features:
-- Type: Causal Language Models
-- Training Stage: Pretraining & Post-training
-- Number of Parameters: 0.6B
-- Number of Paramaters (Non-Embedding): 0.44B
-- Number of Layers: 28
-- Number of Attention Heads (GQA): 16 for Q and 8 for KV
-- Context Length: 32,768 
-
-For more details, including benchmark evaluation, hardware requirements, and inference performance, please refer to our [blog](https://qwenlm.github.io/blog/qwen3/), [GitHub](https://github.com/QwenLM/Qwen3), and [Documentation](https://qwen.readthedocs.io/en/latest/).
-
-> [!TIP]
-> If you encounter significant endless repetitions, please refer to the [Best Practices](#best-practices) section for optimal sampling parameters, and set the ``presence_penalty`` to 1.5.
-
-## Quickstart
-
-The code of Qwen3 has been in the latest Hugging Face `transformers` and we advise you to use the latest version of `transformers`.
-
-With `transformers<4.51.0`, you will encounter the following error:
-```
-KeyError: 'qwen3'
-```
-
-The following contains a code snippet illustrating how to use the model generate content based on given inputs. 
-```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-model_name = "Qwen/Qwen3-0.6B"
-
-# load the tokenizer and the model
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForCausalLM.from_pretrained(
-    model_name,
-    torch_dtype="auto",
-    device_map="auto"
-)
-
-# prepare the model input
-prompt = "Give me a short introduction to large language model."
-messages = [
-    {"role": "user", "content": prompt}
-]
-text = tokenizer.apply_chat_template(
-    messages,
-    tokenize=False,
-    add_generation_prompt=True,
-    enable_thinking=True # Switches between thinking and non-thinking modes. Default is True.
-)
-model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
-
-# conduct text completion
-generated_ids = model.generate(
-    **model_inputs,
-    max_new_tokens=32768
-)
-output_ids = generated_ids[0][len(model_inputs.input_ids[0]):].tolist() 
-
-# parsing thinking content
-try:
-    # rindex finding 151668 (</think>)
-    index = len(output_ids) - output_ids[::-1].index(151668)
-except ValueError:
-    index = 0
-
-thinking_content = tokenizer.decode(output_ids[:index], skip_special_tokens=True).strip("\n")
-content = tokenizer.decode(output_ids[index:], skip_special_tokens=True).strip("\n")
-
-print("thinking content:", thinking_content)
-print("content:", content)
-```
-
-For deployment, you can use `sglang>=0.4.6.post1` or `vllm>=0.8.5` or to create an OpenAI-compatible API endpoint:
-- SGLang:
-    ```shell
-    python -m sglang.launch_server --model-path Qwen/Qwen3-0.6B --reasoning-parser qwen3
-    ```
-- vLLM:
-    ```shell
-    vllm serve Qwen/Qwen3-0.6B --enable-reasoning --reasoning-parser deepseek_r1
-    ```
-
-For local use, applications such as Ollama, LMStudio, MLX-LM, llama.cpp, and KTransformers have also supported Qwen3.
-
-## Switching Between Thinking and Non-Thinking Mode
-
-> [!TIP]
-> The `enable_thinking` switch is also available in APIs created by SGLang and vLLM. 
-> Please refer to our documentation for [SGLang](https://qwen.readthedocs.io/en/latest/deployment/sglang.html#thinking-non-thinking-modes) and [vLLM](https://qwen.readthedocs.io/en/latest/deployment/vllm.html#thinking-non-thinking-modes) users.
-
-### `enable_thinking=True`
-
-By default, Qwen3 has thinking capabilities enabled, similar to QwQ-32B. This means the model will use its reasoning abilities to enhance the quality of generated responses. For example, when explicitly setting `enable_thinking=True` or leaving it as the default value in `tokenizer.apply_chat_template`, the model will engage its thinking mode.
-
-```python
-text = tokenizer.apply_chat_template(
-    messages,
-    tokenize=False,
-    add_generation_prompt=True,
-    enable_thinking=True  # True is the default value for enable_thinking
-)
-```
-
-In this mode, the model will generate think content wrapped in a `<think>...</think>` block, followed by the final response.
-
-> [!NOTE]
-> For thinking mode, use `Temperature=0.6`, `TopP=0.95`, `TopK=20`, and `MinP=0` (the default setting in `generation_config.json`). **DO NOT use greedy decoding**, as it can lead to performance degradation and endless repetitions. For more detailed guidance, please refer to the [Best Practices](#best-practices) section.
+from bs4 import BeautifulSoup
+from email import policy
+from email.parser import BytesParser
+from email.message import Message
 
 
-### `enable_thinking=False`
+# -------- utils --------
+def die(msg: str, code: int = 2) -> None:
+    print(msg, file=sys.stderr)
+    raise SystemExit(code)
 
-We provide a hard switch to strictly disable the model's thinking behavior, aligning its functionality with the previous Qwen2.5-Instruct models. This mode is particularly useful in scenarios where disabling thinking is essential for enhancing efficiency.
 
-```python
-text = tokenizer.apply_chat_template(
-    messages,
-    tokenize=False,
-    add_generation_prompt=True,
-    enable_thinking=False  # Setting enable_thinking=False disables thinking mode
-)
-```
+def run(cmd: List[str]) -> None:
+    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if p.returncode != 0:
+        die(f"Command failed: {' '.join(cmd)}\nSTDOUT:\n{p.stdout}\nSTDERR:\n{p.stderr}")
 
-In this mode, the model will not generate any think content and will not include a `<think>...</think>` block.
 
-> [!NOTE]
-> For non-thinking mode, we suggest using `Temperature=0.7`, `TopP=0.8`, `TopK=20`, and `MinP=0`. For more detailed guidance, please refer to the [Best Practices](#best-practices) section.
+def safe_name(s: str) -> str:
+    s = (s or "").strip()
+    s = re.sub(r"[\\/:*?\"<>|]+", "_", s)
+    return s or "mail"
 
-### Advanced Usage: Switching Between Thinking and Non-Thinking Modes via User Input
 
-We provide a soft switch mechanism that allows users to dynamically control the model's behavior when `enable_thinking=True`. Specifically, you can add `/think` and `/no_think` to user prompts or system messages to switch the model's thinking mode from turn to turn. The model will follow the most recent instruction in multi-turn conversations.
+def safe_filename(name: str) -> str:
+    name = (name or "").strip().replace("\x00", "")
+    name = re.sub(r"[\\/:*?\"<>|]+", "_", name)
+    return name or "asset"
 
-Here is an example of a multi-turn conversation:
 
-```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
+# -------- msg -> eml --------
+def msg_to_eml(msg_path: Path, eml_path: Path) -> None:
+    if shutil.which("msgconvert") is None:
+        die("msgconvert not found. Install: sudo apt-get install libemail-outlook-message-perl")
 
-class QwenChatbot:
-    def __init__(self, model_name="Qwen/Qwen3-0.6B"):
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModelForCausalLM.from_pretrained(model_name)
-        self.history = []
+    tmp = eml_path.with_suffix(".tmp.eml")
+    if tmp.exists():
+        tmp.unlink()
 
-    def generate_response(self, user_input):
-        messages = self.history + [{"role": "user", "content": user_input}]
+    p = subprocess.run(["msgconvert", str(msg_path), "-o", str(tmp)],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if p.returncode == 0 and tmp.exists() and tmp.stat().st_size > 0:
+        tmp.replace(eml_path)
+        return
 
-        text = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
+    p2 = subprocess.run(["msgconvert", str(msg_path)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if p2.returncode != 0:
+        die(f"msgconvert failed.\nSTDERR:\n{p2.stderr.decode(errors='ignore')}")
+    eml_path.write_bytes(p2.stdout)
+
+
+def parse_eml(eml_path: Path) -> Message:
+    return BytesParser(policy=policy.default).parsebytes(eml_path.read_bytes())
+
+
+def get_best_body(eml: Message) -> Tuple[str, str]:
+    if eml.is_multipart():
+        html_part = eml.get_body(preferencelist=("html",))
+        if html_part:
+            return "text/html", html_part.get_content()
+        text_part = eml.get_body(preferencelist=("plain",))
+        if text_part:
+            return "text/plain", text_part.get_content()
+    else:
+        ctype = eml.get_content_type()
+        if ctype in ("text/html", "text/plain"):
+            return ctype, eml.get_content()
+    return "text/plain", ""
+
+
+def iter_leaf_parts(m: Message):
+    if m.is_multipart():
+        for p in m.iter_parts():
+            yield from iter_leaf_parts(p)
+    else:
+        yield m
+
+
+# -------- extract images (CID + octet-stream by filename) --------
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
+
+
+def guess_ext(mime: str) -> str:
+    mime = (mime or "").lower()
+    return {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+        "image/bmp": ".bmp",
+        "image/tiff": ".tif",
+    }.get(mime, "")
+
+
+def looks_like_image(part: Message) -> bool:
+    ctype = (part.get_content_type() or "").lower()
+    if ctype.startswith("image/"):
+        return True
+    fn = part.get_filename() or ""
+    return Path(fn).suffix.lower() in IMAGE_EXTS
+
+
+def extract_all_images(eml: Message, assets_dir: Path) -> Tuple[Dict[str, str], List[str]]:
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    cid_map: Dict[str, str] = {}
+    all_urls: List[str] = []
+    idx = 0
+
+    for part in iter_leaf_parts(eml):
+        if not looks_like_image(part):
+            continue
+
+        payload = part.get_payload(decode=True)
+        if not payload:
+            continue
+
+        cid = part.get("Content-ID")
+        fname = part.get_filename()
+
+        ext = ""
+        if fname:
+            ext = Path(fname).suffix
+        if not ext:
+            ext = guess_ext(part.get_content_type()) or ".bin"
+        if not ext.startswith("."):
+            ext = "." + ext
+
+        base = "img"
+        if fname:
+            base = Path(safe_filename(fname)).stem or "img"
+
+        out_name = f"{base}_{idx}{ext}"
+        idx += 1
+
+        out_path = (assets_dir / out_name).resolve()
+        out_path.write_bytes(payload)
+
+        file_url = out_path.as_uri()
+        all_urls.append(file_url)
+
+        if cid:
+            cid_clean = cid.strip().strip("<>").lower()
+            if cid_clean:
+                cid_map[cid_clean] = file_url
+
+    return cid_map, all_urls
+
+
+def rewrite_cid_src(html: str, cid_map: Dict[str, str]) -> str:
+    def repl_d(m):
+        cid = m.group(1).strip().strip("<>").lower()
+        return f'src="{cid_map.get(cid, "cid:"+m.group(1))}"'
+    def repl_s(m):
+        cid = m.group(1).strip().strip("<>").lower()
+        return f"src='{cid_map.get(cid, 'cid:'+m.group(1))}'"
+
+    html = re.sub(r'src\s*=\s*"(?:cid:)([^"]+)"', repl_d, html, flags=re.IGNORECASE)
+    html = re.sub(r"src\s*=\s*'(?:cid:)([^']+)'", repl_s, html, flags=re.IGNORECASE)
+    return html
+
+
+# -------- table border hardening for wkhtmltopdf --------
+PRINT_HEAD_CSS = """
+<style>
+@page { margin: 12mm; }
+body { font-family: Arial, "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 12pt; }
+img { max-width: 100%; height: auto; }
+pre { white-space: pre-wrap; word-break: break-word; }
+</style>
+"""
+FORCE_TABLE_STYLE = "border:1px solid #000; border-collapse:collapse;"
+FORCE_CELL_STYLE = "border:1px solid #000; padding:4px 6px; vertical-align:top;"
+
+
+def convert_mso_border_to_standard(style: str) -> str:
+    if not style:
+        return style
+    s = re.sub(r"windowtext|auto", "#000", style, flags=re.IGNORECASE)
+    if "mso-border-alt" in s.lower() and "border" not in s.lower():
+        s += " border:1px solid #000;"
+    s = re.sub(r"(\bborder[^;:]*:\s*[^;]*?)\b(\d+(\.\d+)?)pt\b", r"\1 1px", s, flags=re.IGNORECASE)
+    return s
+
+
+def harden_tables_for_wk(html_doc: str) -> str:
+    soup = BeautifulSoup(html_doc, "lxml")
+    if soup.html is None:
+        wrapper = BeautifulSoup("<html><head></head><body></body></html>", "lxml")
+        for node in list(soup.contents):
+            wrapper.body.append(node)
+        soup = wrapper
+    if soup.head is None:
+        head = soup.new_tag("head")
+        soup.html.insert(0, head)
+
+    soup.head.append(BeautifulSoup(PRINT_HEAD_CSS, "lxml"))
+
+    for table in soup.find_all("table"):
+        st = convert_mso_border_to_standard(table.get("style", ""))
+        if "border" not in st.lower():
+            st = (st + (" " if st else "") + FORCE_TABLE_STYLE).strip()
+        else:
+            if "border-collapse" not in st.lower():
+                st = (st.rstrip(";") + "; border-collapse:collapse;").strip()
+        table["style"] = st
+
+    for cell in soup.find_all(["td", "th"]):
+        st = convert_mso_border_to_standard(cell.get("style", ""))
+        if "border" not in st.lower():
+            st = (st + (" " if st else "") + FORCE_CELL_STYLE).strip()
+        else:
+            if "padding" not in st.lower():
+                st = (st.rstrip(";") + "; padding:4px 6px;").strip()
+            if "vertical-align" not in st.lower():
+                st = (st.rstrip(";") + "; vertical-align:top;").strip()
+        cell["style"] = st
+
+    return str(soup)
+
+
+# -------- ensure all images appear --------
+def append_all_images(html_doc: str, all_urls: List[str]) -> str:
+    soup = BeautifulSoup(html_doc, "lxml")
+    if soup.body is None:
+        if soup.html is None:
+            wrapper = BeautifulSoup("<html><head></head><body></body></html>", "lxml")
+            for node in list(soup.contents):
+                wrapper.body.append(node)
+            soup = wrapper
+        else:
+            body = soup.new_tag("body")
+            soup.html.append(body)
+
+    referenced: Set[str] = set()
+    for img in soup.find_all("img"):
+        src = (img.get("src") or "").strip()
+        if src:
+            referenced.add(src)
+
+    missing = [u for u in all_urls if u not in referenced]
+    if not missing:
+        return str(soup)
+
+    soup.body.append(soup.new_tag("hr"))
+    h2 = soup.new_tag("h2")
+    h2.string = "Images (All extracted)"
+    soup.body.append(h2)
+
+    for u in missing:
+        block = soup.new_tag("div")
+        block["style"] = "margin:12px 0;"
+        cap = soup.new_tag("div")
+        cap.string = u
+        img = soup.new_tag("img")
+        img["src"] = u
+        block.append(cap)
+        block.append(img)
+        soup.body.append(block)
+
+    return str(soup)
+
+
+# -------- HTML doc wrapper --------
+def ensure_full_html_doc(mime: str, body: str, title: str) -> str:
+    if mime == "text/plain":
+        esc = (
+            (body or "")
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
         )
+        return f"<!doctype html><html><head><meta charset='utf-8'/><title>{title}</title></head><body><pre>{esc}</pre></body></html>"
 
-        inputs = self.tokenizer(text, return_tensors="pt")
-        response_ids = self.model.generate(**inputs, max_new_tokens=32768)[0][len(inputs.input_ids[0]):].tolist()
-        response = self.tokenizer.decode(response_ids, skip_special_tokens=True)
+    if "<html" in (body or "").lower():
+        return body
+    return f"<!doctype html><html><head><meta charset='utf-8'/><title>{title}</title></head><body>{body or ''}</body></html>"
 
-        # Update history
-        self.history.append({"role": "user", "content": user_input})
-        self.history.append({"role": "assistant", "content": response})
 
-        return response
+# -------- render: html -> pdf -> png --------
+def html_to_pdf_wk(html_path: Path, pdf_path: Path) -> None:
+    if shutil.which("wkhtmltopdf") is None:
+        die("wkhtmltopdf not found. Install: sudo apt-get install wkhtmltopdf")
 
-# Example Usage
+    html_path = html_path.resolve()
+    work_dir = html_path.parent.resolve()
+
+    cmd = [
+        "wkhtmltopdf",
+        "--enable-local-file-access",
+        "--allow", str(work_dir),
+        "--allow", str(work_dir / "assets"),
+        "--print-media-type",
+        "--disable-smart-shrinking",
+        "--load-error-handling", "ignore",
+        "--dpi", "200",
+        str(html_path),
+        str(pdf_path),
+    ]
+    run(cmd)
+
+
+def pdf_to_pngs(pdf_path: Path, out_prefix: Path, dpi: int = 200) -> List[Path]:
+    """
+    Use pdftoppm to generate PNGs:
+      out_prefix-1.png, out_prefix-2.png, ...
+    """
+    if shutil.which("pdftoppm") is None:
+        die("pdftoppm not found. Install: sudo apt-get install poppler-utils")
+
+    cmd = [
+        "pdftoppm",
+        "-png",
+        "-r", str(dpi),
+        str(pdf_path),
+        str(out_prefix),
+    ]
+    run(cmd)
+
+    # Collect output files
+    out_files = sorted(out_prefix.parent.glob(out_prefix.name + "-*.png"))
+    return out_files
+
+
+# -------- pipeline: msg -> images --------
+def convert_msg_to_images(msg_path: str, out_dir: str, dpi: int = 200) -> List[Path]:
+    msg_path_p = Path(msg_path).resolve()
+    out_dir_p = Path(out_dir).resolve()
+    out_dir_p.mkdir(parents=True, exist_ok=True)
+
+    base = safe_name(msg_path_p.stem)
+    work_dir = out_dir_p / base
+    assets_dir = work_dir / "assets"
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    eml_path = work_dir / f"{base}.eml"
+    html_path = work_dir / "render.html"
+    pdf_path = work_dir / f"{base}.pdf"
+
+    # 1) MSG -> EML
+    msg_to_eml(msg_path_p, eml_path)
+
+    # 2) Parse EML
+    eml = parse_eml(eml_path)
+    subject = str(eml.get("Subject") or base)
+    mime, body = get_best_body(eml)
+
+    # 3) Build HTML
+    html_doc = ensure_full_html_doc(mime, body, title=subject)
+
+    # 4) Extract images + CID rewrite + append all images
+    cid_map, all_urls = extract_all_images(eml, assets_dir)
+    if cid_map:
+        html_doc = rewrite_cid_src(html_doc, cid_map)
+    if all_urls:
+        html_doc = append_all_images(html_doc, all_urls)
+
+    # 5) Harden table borders for wkhtmltopdf
+    html_doc = harden_tables_for_wk(html_doc)
+
+    html_path.write_text(html_doc, encoding="utf-8")
+
+    # 6) HTML -> PDF
+    html_to_pdf_wk(html_path, pdf_path)
+
+    # 7) PDF -> PNG(s) to out_dir root (not work_dir), easier to consume
+    out_prefix = out_dir_p / f"{base}"
+    pngs = pdf_to_pngs(pdf_path, out_prefix=out_prefix, dpi=dpi)
+
+    return pngs
+
+
 if __name__ == "__main__":
-    chatbot = QwenChatbot()
+    if len(sys.argv) < 3:
+        die("Usage: python3 msg_to_images.py <input.msg> <output_dir> [dpi]")
 
-    # First input (without /think or /no_think tags, thinking mode is enabled by default)
-    user_input_1 = "How many r's in strawberries?"
-    print(f"User: {user_input_1}")
-    response_1 = chatbot.generate_response(user_input_1)
-    print(f"Bot: {response_1}")
-    print("----------------------")
-
-    # Second input with /no_think
-    user_input_2 = "Then, how many r's in blueberries? /no_think"
-    print(f"User: {user_input_2}")
-    response_2 = chatbot.generate_response(user_input_2)
-    print(f"Bot: {response_2}") 
-    print("----------------------")
-
-    # Third input with /think
-    user_input_3 = "Really? /think"
-    print(f"User: {user_input_3}")
-    response_3 = chatbot.generate_response(user_input_3)
-    print(f"Bot: {response_3}")
-```
-
-> [!NOTE]
-> For API compatibility, when `enable_thinking=True`, regardless of whether the user uses `/think` or `/no_think`, the model will always output a block wrapped in `<think>...</think>`. However, the content inside this block may be empty if thinking is disabled.
-> When `enable_thinking=False`, the soft switches are not valid. Regardless of any `/think` or `/no_think` tags input by the user, the model will not generate think content and will not include a `<think>...</think>` block.
-
-## Agentic Use
-
-Qwen3 excels in tool calling capabilities. We recommend using [Qwen-Agent](https://github.com/QwenLM/Qwen-Agent) to make the best use of agentic ability of Qwen3. Qwen-Agent encapsulates tool-calling templates and tool-calling parsers internally, greatly reducing coding complexity.
-
-To define the available tools, you can use the MCP configuration file, use the integrated tool of Qwen-Agent, or integrate other tools by yourself.
-```python
-from qwen_agent.agents import Assistant
-
-# Define LLM
-llm_cfg = {
-    'model': 'Qwen3-0.6B',
-
-    # Use the endpoint provided by Alibaba Model Studio:
-    # 'model_type': 'qwen_dashscope',
-    # 'api_key': os.getenv('DASHSCOPE_API_KEY'),
-
-    # Use a custom endpoint compatible with OpenAI API:
-    'model_server': 'http://localhost:8000/v1',  # api_base
-    'api_key': 'EMPTY',
-
-    # Other parameters:
-    # 'generate_cfg': {
-    #         # Add: When the response content is `<think>this is the thought</think>this is the answer;
-    #         # Do not add: When the response has been separated by reasoning_content and content.
-    #         'thought_in_content': True,
-    #     },
-}
-
-# Define Tools
-tools = [
-    {'mcpServers': {  # You can specify the MCP configuration file
-            'time': {
-                'command': 'uvx',
-                'args': ['mcp-server-time', '--local-timezone=Asia/Shanghai']
-            },
-            "fetch": {
-                "command": "uvx",
-                "args": ["mcp-server-fetch"]
-            }
-        }
-    },
-  'code_interpreter',  # Built-in tools
-]
-
-# Define Agent
-bot = Assistant(llm=llm_cfg, function_list=tools)
-
-# Streaming generation
-messages = [{'role': 'user', 'content': 'https://qwenlm.github.io/blog/ Introduce the latest developments of Qwen'}]
-for responses in bot.run(messages=messages):
-    pass
-print(responses)
-```
-
-## Best Practices
-
-To achieve optimal performance, we recommend the following settings:
-
-1. **Sampling Parameters**:
-   - For thinking mode (`enable_thinking=True`), use `Temperature=0.6`, `TopP=0.95`, `TopK=20`, and `MinP=0`. **DO NOT use greedy decoding**, as it can lead to performance degradation and endless repetitions.
-   - For non-thinking mode (`enable_thinking=False`), we suggest using `Temperature=0.7`, `TopP=0.8`, `TopK=20`, and `MinP=0`.
-   - For supported frameworks, you can adjust the `presence_penalty` parameter between 0 and 2 to reduce endless repetitions. However, using a higher value may occasionally result in language mixing and a slight decrease in model performance.
-
-2. **Adequate Output Length**: We recommend using an output length of 32,768 tokens for most queries. For benchmarking on highly complex problems, such as those found in math and programming competitions, we suggest setting the max output length to 38,912 tokens. This provides the model with sufficient space to generate detailed and comprehensive responses, thereby enhancing its overall performance.
-
-3. **Standardize Output Format**: We recommend using prompts to standardize model outputs when benchmarking.
-   - **Math Problems**: Include "Please reason step by step, and put your final answer within \boxed{}." in the prompt.
-   - **Multiple-Choice Questions**: Add the following JSON structure to the prompt to standardize responses: "Please show your choice in the `answer` field with only the choice letter, e.g., `"answer": "C"`."
-
-4. **No Thinking Content in History**: In multi-turn conversations, the historical model output should only include the final output part and does not need to include the thinking content. It is implemented in the provided chat template in Jinja2. However, for frameworks that do not directly use the Jinja2 chat template, it is up to the developers to ensure that the best practice is followed.
-
-### Citation
-
-If you find our work helpful, feel free to give us a cite.
-
-```
-@misc{qwen3technicalreport,
-      title={Qwen3 Technical Report}, 
-      author={Qwen Team},
-      year={2025},
-      eprint={2505.09388},
-      archivePrefix={arXiv},
-      primaryClass={cs.CL},
-      url={https://arxiv.org/abs/2505.09388}, 
-}
-```
+    dpi = int(sys.argv[3]) if len(sys.argv) >= 4 else 200
+    pngs = convert_msg_to_images(sys.argv[1], sys.argv[2], dpi=dpi)
+    for p in pngs:
+        print(str(p))
