@@ -1,3 +1,10 @@
+Hi Katy,
+
+Noted with thanks. We will proceed accordingly for this case and reach out if any further checks are needed.
+
+Best regards,
+Jason
+
 下面是一份 SHL Code Test 高频题型清单（30题）。
 这些题型是根据 SHL 常见题库风格整理的，和 LeetCode / HackerRank 上的题型高度对应。
 
