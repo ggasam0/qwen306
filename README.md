@@ -1,3 +1,18 @@
+import openpyxl
+
+def remove_formulas_keep_values(input_path, output_path):
+    wb_formula = openpyxl.load_workbook(input_path, data_only=False)
+    wb_values = openpyxl.load_workbook(input_path, data_only=True)
+
+    for ws_formula, ws_values in zip(wb_formula.worksheets, wb_values.worksheets):
+        for row in ws_formula.iter_rows():
+            for cell in row:
+                if cell.data_type == 'f':
+                    cell.value = ws_values[cell.coordinate].value
+
+    wb_formula.save(output_path)
+
+
 Hi Katy,
 
 Noted with thanks. We will proceed accordingly for this case and reach out if any further checks are needed.
